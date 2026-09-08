@@ -31,11 +31,15 @@ data stream that exercises the whole UI.
 
 ## AI insights
 
-Settings → paste an Anthropic API key (stored locally via
-`shared_preferences`, never leaves the device except in the API call
-itself). The "Analisar" button sends a one-line plain-text summary of
-whatever modules are currently available (not raw sensor data) and shows
-back a short, non-diagnostic comment. See
+Uses the **Gemini API** (free tier) instead of a paid one. Settings → paste
+a Gemini key from [aistudio.google.com/apikey](https://aistudio.google.com/apikey)
+(stored locally via `shared_preferences`, never leaves the device except in
+the API call itself). Model name is also editable in Settings, in case
+Google renames/retires the default (`gemini-2.0-flash`) later.
+
+The "Analisar" button sends a one-line plain-text summary of whatever
+modules are currently available (not raw sensor data) and shows back a
+short, non-diagnostic comment. See
 [`ai_service.dart`](lib/services/ai_service.dart).
 
 ## Running it
@@ -57,6 +61,6 @@ been exercised yet.
 - [x] Modular sensor-card architecture
 - [x] BLE connect + live pulse-ox readings + waveform
 - [x] Demo mode (no hardware required)
-- [x] AI insight panel (bring your own Anthropic key)
+- [x] AI insight panel (bring your own Gemini key, free tier)
 - [ ] AD8232 ECG module (activates automatically once the firmware sends it)
 - [ ] Android build verified on a device/emulator
