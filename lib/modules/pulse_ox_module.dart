@@ -150,6 +150,10 @@ class _Waveform extends StatelessWidget {
         titlesData: const FlTitlesData(show: false),
         borderData: FlBorderData(show: false),
         lineTouchData: const LineTouchData(enabled: false),
+        // Without this, the curve's cubic smoothing overshoots past the
+        // first/last points and bleeds outside the chart's own box (visible
+        // as the amber fill spilling past the card's rounded edge).
+        clipData: const FlClipData.all(),
         lineBarsData: [
           LineChartBarData(
             spots: [

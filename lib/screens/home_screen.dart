@@ -128,27 +128,49 @@ class _ConnectionBar extends StatelessWidget {
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
-        child: Row(
+        // Column (status row + action row on their own lines) instead of a
+        // single Row: on narrower screens a label + two buttons side by side
+        // don't fit and the label wraps ugly. This is robust at any width.
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Container(
-              width: 10,
-              height: 10,
-              decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+            Row(
+              children: [
+                Container(
+                  width: 10,
+                  height: 10,
+                  decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    label,
+                    style: TextStyle(color: color, fontWeight: FontWeight.w600),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                if (busy) const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
+              ],
             ),
-            const SizedBox(width: 10),
-            Expanded(child: Text(label, style: TextStyle(color: color, fontWeight: FontWeight.w600))),
-            if (busy)
-              const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
-            else if (ble.status == ConnectionStatus.connected || ble.status == ConnectionStatus.demo)
-              OutlinedButton(onPressed: () => ble.disconnect(), child: const Text('Desconectar'))
-            else
-              Wrap(
-                spacing: 8,
-                children: [
-                  OutlinedButton(onPressed: () => ble.startDemoMode(), child: const Text('Demonstração')),
-                  FilledButton(onPressed: () => ble.connect(), child: const Text('Conectar')),
-                ],
-              ),
+            if (!busy) ...[
+              const SizedBox(height: 12),
+              if (ble.status == ConnectionStatus.connected || ble.status == ConnectionStatus.demo)
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: OutlinedButton(onPressed: () => ble.disconnect(), child: const Text('Desconectar')),
+                )
+              else
+                Wrap(
+                  alignment: WrapAlignment.end,
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    OutlinedButton(onPressed: () => ble.startDemoMode(), child: const Text('Demonstração')),
+                    FilledButton(onPressed: () => ble.connect(), child: const Text('Conectar')),
+                  ],
+                ),
+            ],
           ],
         ),
       ),
