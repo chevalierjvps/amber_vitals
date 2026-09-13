@@ -24,14 +24,25 @@
       LO-    -> GPIO33 (Detecção de eletrodo solto -)
 
   Matemática & Filtros ECG (DSP a 200 Hz -> decimação para 50 Hz):
-    1. Filtro Notch IIR Biquad 60 Hz (elimina ruído da rede elétrica brasileira)
-    2. Filtro Passa-Baixas Butterworth de 2ª ordem (corte em 35 Hz contra EMG)
-    3. Remoção adaptativa de Baseline Wander (deriva da linha de base < 0.5 Hz)
-    4. Algoritmo Pan-Tompkins para detecção robusta de pico R (QRS) e cálculo de BPM_ECG
-    5. Modo Demonstração / Teste sintético integrado acionável via BLE ("DEMO")
+    1. Filtro de Outliers Hampel (mediana móvel de 3 pontos + MAD) contra
+       pop de eletrodo e artefatos de movimento na entrada bruta do ADC
+    2. Filtro Notch IIR Biquad 60 Hz Direct Form II Transposed, Q=8.0
+       (elimina ruído da rede elétrica com atenuação mínima em 10-25 Hz)
+    3. Suavização Savitzky-Golay quadrática de 5 pontos ([-3,12,17,12,-3]/35)
+       para preservar a inclinação e amplitude do pico R sem o arredondamento
+       de um passa-baixas convencional
+    4. Corretor de deriva de linha de base Passa-Altas de polo único a
+       0.67 Hz, compatível com a faixa de monitoramento IEC 60601-2-25
+    5. Trava Isoelétrica do segmento TP em 2048 (mid-scale) com clamping
+       sigmoidal suave para evitar corte abrupto tipo onda quadrada
+    6. Índice de Qualidade de Sinal (SQI) em tempo real: energia do QRS
+       vs. variância da linha de base do segmento TP
+    7. Algoritmo Pan-Tompkins para detecção robusta de pico R (QRS) e cálculo de BPM_ECG
+    8. Modo Demonstração / Teste sintético integrado acionável via BLE ("DEMO")
 
   Payload BLE Telemetria (50 Hz):
-    "IR,BPM,SPO2,FINGER_OK,ECG,LEADS_OFF,BPM_ECG\n"
+    "IR,BPM,SPO2,FINGER_OK,ECG,LEADS_OFF,BPM_ECG,SQI\n"
+    SQI: 0=CLEAN, 1=MODERATE_NOISE, 2=LEAD_ARTIFACT
   ======================================================================
 */
 
@@ -101,28 +112,83 @@ const uint32_t LIMIAR_DEDO_PRESENTE = 50000;
 // PROCESSAMENTO DIGITAL DE SINAIS (DSP) PARA ECG
 // Amostragem a 200 Hz (5ms) com decimação 4:1 para transmissão a 50 Hz (20ms)
 // -------------------------------------------------------------------------
-// Filtro Notch IIR Biquad 60 Hz @ Fs = 200 Hz:
+// 1. Filtro de Outliers Hampel (mediana móvel de 3 pontos + MAD)
+// Elimina pop de eletrodo / glitches de contato ADC antes dos filtros lineares.
+float hampel_w0 = 2048.0f, hampel_w1 = 2048.0f, hampel_w2 = 2048.0f;
+const float HAMPEL_N_SIGMAS = 3.0f;
+
+float ordenaMediana3(float a, float b, float c) {
+  return max(min(a, b), min(max(a, b), c));
+}
+
+float aplicaFiltroHampel(float xn) {
+  hampel_w0 = hampel_w1;
+  hampel_w1 = hampel_w2;
+  hampel_w2 = xn;
+
+  float mediana = ordenaMediana3(hampel_w0, hampel_w1, hampel_w2);
+  // MAD (Median Absolute Deviation) aproximado sobre a janela de 3 amostras,
+  // escalado por 1.4826 para ser consistente com o desvio padrão de uma
+  // distribuição normal.
+  float d0 = fabsf(hampel_w0 - mediana);
+  float d1 = fabsf(hampel_w1 - mediana);
+  float d2 = fabsf(hampel_w2 - mediana);
+  float mad = ordenaMediana3(d0, d1, d2) * 1.4826f;
+
+  if (fabsf(xn - mediana) > HAMPEL_N_SIGMAS * mad) {
+    return mediana; // Substitui o outlier pela mediana da janela
+  }
+  return xn;
+}
+
+// 2. Filtro Notch IIR Biquad 60 Hz @ Fs = 200 Hz, Q = 8.0, Direct Form II Transposed:
 // H(z) = (b0 + b1*z^-1 + b2*z^-2) / (1 + a1*z^-1 + a2*z^-2)
-const float NOTCH_B0 = 0.92244458f;
-const float NOTCH_B1 = 0.57010210f;
-const float NOTCH_B2 = 0.92244458f;
-const float NOTCH_A1 = 0.56859127f;
-const float NOTCH_A2 = 0.84640000f;
+const float NOTCH_B0 = 0.94390000f;
+const float NOTCH_B1 = 0.58330000f;
+const float NOTCH_B2 = 0.94390000f;
+const float NOTCH_A1 = 0.58330000f;
+const float NOTCH_A2 = 0.88780000f;
 float notch_x1 = 0.0f, notch_x2 = 0.0f;
-float notch_y1 = 0.0f, notch_y2 = 0.0f;
 
-// Filtro Passa-Baixas Butterworth 2ª Ordem @ 35 Hz, Fs = 200 Hz:
-const float LP_B0 = 0.16748380f;
-const float LP_B1 = 0.33496760f;
-const float LP_B2 = 0.16748380f;
-const float LP_A1 = -0.55703100f;
-const float LP_A2 = 0.22696620f;
-float lp_x1 = 0.0f, lp_x2 = 0.0f;
-float lp_y1 = 0.0f, lp_y2 = 0.0f;
+// 3. Suavização Savitzky-Golay Quadrática de 5 Pontos (preserva o pico R)
+// Coeficientes: [-3, 12, 17, 12, -3] / 35
+float sgBuffer[5] = {2048.0f, 2048.0f, 2048.0f, 2048.0f, 2048.0f};
 
-// Remoção adaptativa de deriva de linha de base (Baseline Wander)
-float ecgBaselineLenta = 2048.0f;
-float ecgSinalFiltradoFinal = 2048.0f;
+float aplicaSavitzkyGolay(float xn) {
+  sgBuffer[0] = sgBuffer[1];
+  sgBuffer[1] = sgBuffer[2];
+  sgBuffer[2] = sgBuffer[3];
+  sgBuffer[3] = sgBuffer[4];
+  sgBuffer[4] = xn;
+  return (-3.0f * sgBuffer[0] + 12.0f * sgBuffer[1] + 17.0f * sgBuffer[2]
+          + 12.0f * sgBuffer[3] - 3.0f * sgBuffer[4]) / 35.0f;
+}
+
+// 4. Corretor de Deriva de Linha de Base - Passa-Altas de Polo Único a 0.67 Hz
+// (faixa de monitoramento contínuo IEC 60601-2-25), Fs = 200 Hz:
+//   RC = 1 / (2*pi*fc) ; alpha = RC / (RC + dt)
+//   y[n] = alpha * (y[n-1] + x[n] - x[n-1])
+const float HPF_ALPHA = 0.97941f;
+float hpf_xPrev = 2048.0f;
+float hpf_yPrev = 0.0f;
+
+// 5. Trava Isoelétrica do segmento TP (mid-scale ADC) + Clamping Sigmoidal
+const float ISOELECTRIC_CENTRO = 2048.0f;
+float isoelectricBaseline = 0.0f;
+
+float aplicaClampSigmoidal(float valor, float limite) {
+  // Fora da zona linear central, comprime suavemente em direção ao limite
+  // via tangente hiperbólica, evitando corte abrupto tipo onda quadrada.
+  if (fabsf(valor) <= limite) return valor;
+  float excesso = fabsf(valor) - limite;
+  float sinal = (valor < 0) ? -1.0f : 1.0f;
+  return sinal * (limite + limite * 0.15f * tanhf(excesso / (limite * 0.6f)));
+}
+
+// 6. Índice de Qualidade de Sinal (SQI): energia do QRS vs. variância do
+// segmento TP (linha de base entre batimentos)
+float sqiVarianciaBaseline = 1.0f;
+int8_t sqiNivel = 2; // 0=CLEAN, 1=MODERATE_NOISE, 2=LEAD_ARTIFACT (inicia pessimista)
 
 // -------------------------------------------------------------------------
 // Algoritmo Pan-Tompkins para Detecção do Complexo QRS / Pico R
@@ -340,6 +406,7 @@ void processaAmostraEcgDsp(bool &leadsOff, int &ecgSaida) {
     leadsOff = false;
     bpmEcg = 75;
     bpmEcgValido = 1;
+    sqiNivel = 0; // CLEAN: sinal sintético sem ruído
     return;
   }
 
@@ -347,32 +414,42 @@ void processaAmostraEcgDsp(bool &leadsOff, int &ecgSaida) {
     ecgSaida = 0;
     bpmEcgValido = 0;
     estadoQrsAtivo = false;
+    sqiNivel = 2; // LEAD_ARTIFACT: eletrodo desconectado
     return;
   }
 
-  float x0 = (float)analogRead(PINO_ECG_OUTPUT);
+  float xRaw = (float)analogRead(PINO_ECG_OUTPUT);
 
-  // 1. Filtro Notch 60 Hz Biquad Direct Form II Transposed
+  // 1. Filtro de Outliers Hampel (mediana de 3 pontos + MAD)
+  float x0 = aplicaFiltroHampel(xRaw);
+
+  // 2. Filtro Notch 60 Hz Biquad Direct Form II Transposed (Q = 8.0)
   float y_notch = NOTCH_B0 * x0 + notch_x1;
   notch_x1 = NOTCH_B1 * x0 - NOTCH_A1 * y_notch + notch_x2;
   notch_x2 = NOTCH_B2 * x0 - NOTCH_A2 * y_notch;
 
-  // 2. Filtro Passa-Baixas Butterworth 35 Hz
-  float y_lp = LP_B0 * y_notch + lp_x1;
-  lp_x1 = LP_B1 * y_notch - LP_A1 * y_lp + lp_x2;
-  lp_x2 = LP_B2 * y_notch - LP_A2 * y_lp;
+  // 3. Suavização Savitzky-Golay 5 pontos (preserva pico R, remove tremor EMG)
+  float y_sg = aplicaSavitzkyGolay(y_notch);
 
-  // 3. Remoção de Drift de Linha de Base (High-Pass lento a ~0.5 Hz)
-  ecgBaselineLenta += 0.008f * (y_lp - ecgBaselineLenta);
-  float sinalLimpo = y_lp - ecgBaselineLenta;
+  // 4. Passa-Altas de polo único a 0.67 Hz (remoção de deriva respiratória)
+  float y_hpf = HPF_ALPHA * (hpf_yPrev + y_sg - hpf_xPrev);
+  hpf_xPrev = y_sg;
+  hpf_yPrev = y_hpf;
+
+  // 5. Trava Isoelétrica: ancora o segmento TP ao centro de escala (2048)
+  // e comprime suavemente excessos extremos antes de sair para o ADC de 12 bits.
+  if (!estadoQrsAtivo) {
+    isoelectricBaseline += 0.01f * (y_hpf - isoelectricBaseline);
+  }
+  float sinalLimpo = aplicaClampSigmoidal(y_hpf - isoelectricBaseline, 1800.0f);
 
   // Sinal centralizado em 2048 para plotagem padrão de 12-bit
-  ecgSaida = (int)(2048.0f + sinalLimpo);
+  ecgSaida = (int)(ISOELECTRIC_CENTRO + sinalLimpo);
   if (ecgSaida < 0) ecgSaida = 0;
   if (ecgSaida > 4095) ecgSaida = 4095;
 
   // -----------------------------------------------------------------------
-  // 4. Detecção de Pico R (Pan-Tompkins Simplificado)
+  // 6. Detecção de Pico R (Pan-Tompkins Simplificado)
   // -----------------------------------------------------------------------
   // Atualiza buffer da derivada
   ptDiffBuffer[4] = ptDiffBuffer[3];
@@ -421,11 +498,34 @@ void processaAmostraEcgDsp(bool &leadsOff, int &ecgSaida) {
   if (bpmEcgValido && (agora - ultimoPicoRMs) > TIMEOUT_PICO_MS) {
     bpmEcgValido = 0;
   }
+
+  // -----------------------------------------------------------------------
+  // 7. Índice de Qualidade de Sinal (SQI)
+  // Relação entre a energia do QRS (pico adaptativo do MWI) e a variância
+  // do sinal durante o segmento TP (fora da janela ativa do QRS), que
+  // representa o piso de ruído / linha de base.
+  // -----------------------------------------------------------------------
+  if (!estadoQrsAtivo) {
+    float desvioBaseline = sinalLimpo - isoelectricBaseline;
+    sqiVarianciaBaseline += 0.02f * (desvioBaseline * desvioBaseline - sqiVarianciaBaseline);
+  }
+  float sqiRatio = ptMaxPeak / (sqiVarianciaBaseline + 1.0f);
+
+  if (!bpmEcgValido) {
+    sqiNivel = 2; // LEAD_ARTIFACT: sem batimentos detectáveis
+  } else if (sqiRatio > 40.0f) {
+    sqiNivel = 0; // CLEAN
+  } else if (sqiRatio > 12.0f) {
+    sqiNivel = 1; // MODERATE_NOISE
+  } else {
+    sqiNivel = 2; // LEAD_ARTIFACT
+  }
 }
 
 // -------------------------------------------------------------------------
 // Envio da Telemetria por BLE (50 Hz)
-// Formato: "IR,BPM,SPO2,FINGER_OK,ECG,LEADS_OFF,BPM_ECG\n"
+// Formato: "IR,BPM,SPO2,FINGER_OK,ECG,LEADS_OFF,BPM_ECG,SQI\n"
+// SQI: 0=CLEAN, 1=MODERATE_NOISE, 2=LEAD_ARTIFACT
 // -------------------------------------------------------------------------
 void enviaTelemetriaBLE(int ecgValor, bool leadsOff) {
   if (!deviceConnected) return;
@@ -442,15 +542,16 @@ void enviaTelemetriaBLE(int ecgValor, bool leadsOff) {
     dedoEnvio = 1;
   }
 
-  char payload[64];
-  int len = snprintf(payload, sizeof(payload), "%u,%ld,%ld,%d,%d,%d,%ld\n",
+  char payload[72];
+  int len = snprintf(payload, sizeof(payload), "%u,%ld,%ld,%d,%d,%d,%ld,%d\n",
                      irEnvio,
                      bpmEnvio,
                      spo2Envio,
                      dedoEnvio,
                      ecgValor,
                      leadsOff ? 1 : 0,
-                     bpmEcgValido ? bpmEcg : 0);
+                     bpmEcgValido ? bpmEcg : 0,
+                     sqiNivel);
 
   if (len > 0) {
     // 1. Envia via Nordic UART Service (TX Notify)

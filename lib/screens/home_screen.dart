@@ -21,6 +21,7 @@ class _HomeScreenState extends State<HomeScreen> {
   String? _aiInsight;
   bool _aiLoading = false;
   String? _aiError;
+  DateTime? _aiCapturedAt;
 
   // Toggle between CRT Bioscanner view and Modular Cards view
   bool _crtViewMode = true;
@@ -68,10 +69,9 @@ class _HomeScreenState extends State<HomeScreen> {
     });
 
     final modules = <SensorModule>[ble.pulseOx, ble.ecgModule];
-    final available = modules.where((m) => m.isAvailable(ble.latestData));
-    final summary = available.map((m) => m.summarize(ble.latestData)).join(' ');
+    final hasData = modules.any((m) => m.isAvailable(ble.latestData));
 
-    if (summary.isEmpty) {
+    if (!hasData) {
       setState(() {
         _aiLoading = false;
         _aiError = 'No biomedical data available to analyze yet.';
@@ -79,10 +79,33 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
+    final data = ble.latestData;
+    final sessionDuration = ble.sessionStartTime == null
+        ? null
+        : DateTime.now().difference(ble.sessionStartTime!).inSeconds;
+
+    // Rich structured biotelemetry payload for the AMBER-01 Telemetry
+    // Copilot — see AiService for the system prompt that consumes this.
+    final payload = <String, dynamic>{
+      'current_heart_rate_bpm': (data['fingerOk'] == true && (data['bpm'] as int? ?? 0) > 0)
+          ? data['bpm']
+          : ((data['leadsOff'] == false) ? data['bpmEcg'] : null),
+      'spo2_percentage': (data['fingerOk'] == true) ? data['spo2'] : null,
+      'ecg_signal_quality_sqi': data['sqi'],
+      'ecg_leads_connected': data['leadsOff'] == false,
+      'finger_on_sensor': data['fingerOk'] == true,
+      'calculated_rr_intervals_ms': ble.recentRrIntervalsMs,
+      'estimated_hrv_rmssd_ms': ble.estimatedHrvRmssdMs,
+      'pulse_rhythm_regularity': ble.pulseRhythmRegularity,
+      'session_duration_seconds': sessionDuration,
+      'data_source': ble.status == ConnectionStatus.demo ? 'simulated_demo_mode' : 'live_sensor',
+    };
+
     try {
-      final result = await AiService.interpret(summary);
+      final result = await AiService.interpret(payload);
       setState(() {
         _aiInsight = result;
+        _aiCapturedAt = DateTime.now();
         _aiLoading = false;
       });
     } catch (e) {
@@ -95,7 +118,12 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final ble = context.watch<BleManager>();
+    // Deliberately NOT context.watch<BleManager>() here: the AppBar/Scaffold
+    // chrome must not rebuild on every telemetry tick. Reactive sections
+    // (metrics, oscilloscopes) subscribe themselves further down via
+    // ListenableBuilder / ValueListenableBuilder, scoped to just those
+    // widgets.
+    final ble = context.read<BleManager>();
 
     return Scaffold(
       backgroundColor: const Color(0xFF040200),
@@ -141,7 +169,14 @@ class _HomeScreenState extends State<HomeScreen> {
         ],
       ),
       body: SafeArea(
-        child: _crtViewMode ? _buildCrtView(ble) : _buildModularView(ble),
+        // Scoped listener: only this subtree rebuilds when BleManager
+        // notifies (now throttled to ~1.3Hz for metrics). Oscilloscope
+        // canvases inside re-subscribe independently at full sample rate
+        // via ValueListenableBuilder(ble.waveformTick).
+        child: ListenableBuilder(
+          listenable: ble,
+          builder: (context, _) => _crtViewMode ? _buildCrtView(ble) : _buildModularView(ble),
+        ),
       ),
     );
   }
@@ -157,6 +192,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final leadsOff = data['leadsOff'] as bool? ?? true;
     final bpmEcg = data['bpmEcg'] as int? ?? 0;
     final ir = data['ir'] as int? ?? 0;
+    final sqi = data['sqi'] as String? ?? 'LEAD_ARTIFACT';
 
     // Main card fallback logic: PPG takes priority; falls back to ECG if finger is off
     final bpmPpgValid = fingerOk && bpmPpg > 0;
@@ -404,16 +440,21 @@ class _HomeScreenState extends State<HomeScreen> {
           const SizedBox(height: 12),
 
           // Channel 1 Oscilloscope: PPG Waveform
+          // Subscribes directly to the 50Hz waveformTick so the wave stays
+          // silky-smooth without rebuilding the metrics/text above it.
           SizedBox(
             height: 180,
-            child: CrtOscilloscope(
-              title: 'CHANNEL 1 · PPG WAVE',
-              statusText: 'SWEEP 25mm/s',
-              samples: ble.ppgWaveHistory,
-              alertActive: !fingerOk,
-              alertMessage: 'PLACE FINGER ON SENSOR',
-              isDemo: ble.status == ConnectionStatus.demo,
-              waveColor: AmberPalette.amber,
+            child: ValueListenableBuilder<int>(
+              valueListenable: ble.waveformTick,
+              builder: (context, _, _) => CrtOscilloscope(
+                title: 'CHANNEL 1 · PPG WAVE',
+                statusText: 'SWEEP 25mm/s',
+                samples: ble.ppgWaveHistory,
+                alertActive: !fingerOk,
+                alertMessage: 'PLACE FINGER ON SENSOR',
+                isDemo: ble.status == ConnectionStatus.demo,
+                waveColor: AmberPalette.amber,
+              ),
             ),
           ),
           const SizedBox(height: 12),
@@ -421,14 +462,17 @@ class _HomeScreenState extends State<HomeScreen> {
           // Channel 2 Oscilloscope: ECG Waveform
           SizedBox(
             height: 190,
-            child: CrtOscilloscope(
-              title: 'CHANNEL 2 · ECG',
-              statusText: leadsOff ? 'STANDBY' : (bpmEcgValid ? '$bpmEcg BPM' : 'SIGNAL OK'),
-              samples: ble.ecgWaveHistory,
-              alertActive: leadsOff,
-              alertMessage: 'LEADS OFF',
-              isDemo: ble.status == ConnectionStatus.demo,
-              waveColor: const Color(0xFFFFBE26),
+            child: ValueListenableBuilder<int>(
+              valueListenable: ble.waveformTick,
+              builder: (context, _, _) => CrtOscilloscope(
+                title: 'CHANNEL 2 · ECG',
+                statusText: leadsOff ? 'STANDBY' : (bpmEcgValid ? '$bpmEcg BPM' : 'SIGNAL OK'),
+                samples: ble.ecgWaveHistory,
+                alertActive: leadsOff,
+                alertMessage: 'LEADS OFF',
+                isDemo: ble.status == ConnectionStatus.demo,
+                waveColor: const Color(0xFFFFBE26),
+              ),
             ),
           ),
           const SizedBox(height: 12),
@@ -444,8 +488,10 @@ class _HomeScreenState extends State<HomeScreen> {
             child: Column(
               children: [
                 // Status Indicators
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                Wrap(
+                  alignment: WrapAlignment.spaceBetween,
+                  runSpacing: 8,
+                  spacing: 12,
                   children: [
                     _StatusIndicator(
                       label: 'LINK',
@@ -465,6 +511,15 @@ class _HomeScreenState extends State<HomeScreen> {
                       label: 'ECG',
                       value: leadsOff ? 'LOOSE' : 'OK',
                       color: leadsOff ? AmberPalette.red : AmberPalette.green,
+                    ),
+                    _StatusIndicator(
+                      label: 'SQI',
+                      value: sqi.replaceAll('_', ' '),
+                      color: switch (sqi) {
+                        'CLEAN' => AmberPalette.green,
+                        'MODERATE_NOISE' => AmberPalette.cream,
+                        _ => AmberPalette.red,
+                      },
                     ),
                     _StatusIndicator(
                       label: 'IR',
@@ -541,7 +596,7 @@ class _HomeScreenState extends State<HomeScreen> {
             child: Column(
               children: [
                 Text(
-                  'AMBER-01 · BIOTELEMETRY UNIT · SN 30102-BE1',
+                  'AMBER-01 · CLINICAL-STYLE BIOTELEMETRY UNIT · SN 30102-BE1',
                   style: GoogleFonts.jetBrainsMono(
                     fontSize: 10.0,
                     color: const Color(0xFF5E3C00),
@@ -595,6 +650,7 @@ class _HomeScreenState extends State<HomeScreen> {
           loading: _aiLoading,
           insight: _aiInsight,
           error: _aiError,
+          capturedAt: _aiCapturedAt,
           onAsk: availableModules.isEmpty ? null : () => _askAi(ble),
         ),
       ],
@@ -734,13 +790,30 @@ class _EmptyState extends StatelessWidget {
   }
 }
 
+/// AMBER-01 Telemetry Copilot report card. Renders the Gemini Markdown
+/// report with amber-phosphor section badges instead of a raw text blob,
+/// and stamps the capture time so the reading doesn't look stale.
 class _AiInsightCard extends StatelessWidget {
   final bool loading;
   final String? insight;
   final String? error;
+  final DateTime? capturedAt;
   final VoidCallback? onAsk;
 
-  const _AiInsightCard({required this.loading, required this.insight, required this.error, required this.onAsk});
+  const _AiInsightCard({
+    required this.loading,
+    required this.insight,
+    required this.error,
+    required this.capturedAt,
+    required this.onAsk,
+  });
+
+  String _fmtTime(DateTime d) {
+    final h = d.hour.toString().padLeft(2, '0');
+    final m = d.minute.toString().padLeft(2, '0');
+    final s = d.second.toString().padLeft(2, '0');
+    return '$h:$m:$s';
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -754,7 +827,7 @@ class _AiInsightCard extends StatelessWidget {
               children: [
                 const Icon(Icons.auto_awesome_rounded, color: AmberPalette.amber, size: 20),
                 const SizedBox(width: 8),
-                Text('AI Health Insight', style: Theme.of(context).textTheme.titleMedium),
+                Text('AMBER-01 Telemetry Copilot', style: Theme.of(context).textTheme.titleMedium),
                 const Spacer(),
                 if (!loading)
                   TextButton(
@@ -766,8 +839,15 @@ class _AiInsightCard extends StatelessWidget {
               ],
             ),
             if (insight != null) ...[
+              if (capturedAt != null) ...[
+                const SizedBox(height: 6),
+                Text(
+                  'CAPTURED ${_fmtTime(capturedAt!)}',
+                  style: const TextStyle(color: AmberPalette.textDim, fontSize: 10, letterSpacing: 1.2),
+                ),
+              ],
               const SizedBox(height: 12),
-              Text(insight!, style: const TextStyle(color: AmberPalette.text, height: 1.4)),
+              _CopilotReport(markdown: insight!),
             ],
             if (error != null) ...[
               const SizedBox(height: 12),
@@ -776,7 +856,7 @@ class _AiInsightCard extends StatelessWidget {
             if (insight == null && error == null) ...[
               const SizedBox(height: 8),
               const Text(
-                'Request a plain-language educational summary about the current ECG and SpO₂ telemetry readings.',
+                'Request a structured, educational cardiology-style telemetry report from the current ECG and SpO₂ readings.',
                 style: TextStyle(color: AmberPalette.textDim, fontSize: 13),
               ),
             ],
@@ -784,5 +864,78 @@ class _AiInsightCard extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+/// Lightweight Markdown renderer for the Copilot's report — just enough to
+/// turn its numbered "N. 🫀 SECTION TITLE" headers into amber phosphor
+/// badges, "**bold**" spans into bold text, and "- " lines into bullets,
+/// without pulling in a full Markdown package for four heading styles.
+class _CopilotReport extends StatelessWidget {
+  final String markdown;
+  const _CopilotReport({required this.markdown});
+
+  static final _sectionHeader = RegExp(r'^\s*\d+\.\s*(.+)$');
+
+  @override
+  Widget build(BuildContext context) {
+    final lines = markdown.split('\n');
+    final widgets = <Widget>[];
+
+    for (final rawLine in lines) {
+      final line = rawLine.trim();
+      if (line.isEmpty) continue;
+
+      final headerMatch = _sectionHeader.firstMatch(line);
+      if (headerMatch != null) {
+        widgets.add(Padding(
+          padding: EdgeInsets.only(top: widgets.isEmpty ? 0 : 14, bottom: 6),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+            decoration: BoxDecoration(
+              color: AmberPalette.amber.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(color: AmberPalette.amber.withValues(alpha: 0.4)),
+            ),
+            child: Text(
+              _stripBold(headerMatch.group(1)!).toUpperCase(),
+              style: const TextStyle(
+                color: AmberPalette.amberBright,
+                fontWeight: FontWeight.w800,
+                fontSize: 12,
+                letterSpacing: 0.6,
+              ),
+            ),
+          ),
+        ));
+        continue;
+      }
+
+      final isBullet = line.startsWith('- ') || line.startsWith('* ');
+      final content = isBullet ? line.substring(2) : line;
+
+      widgets.add(Padding(
+        padding: EdgeInsets.only(bottom: 6, left: isBullet ? 8 : 0),
+        child: RichText(text: _parseBold(isBullet ? '•  $content' : content)),
+      ));
+    }
+
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: widgets);
+  }
+
+  String _stripBold(String text) => text.replaceAll('**', '');
+
+  /// Splits on `**bold**` markers and returns a TextSpan tree, so a single
+  /// RichText can mix regular and bold runs without a Markdown package.
+  TextSpan _parseBold(String text) {
+    const baseStyle = TextStyle(color: AmberPalette.text, height: 1.45, fontSize: 13.5);
+    final boldStyle = baseStyle.copyWith(fontWeight: FontWeight.w700, color: AmberPalette.cream);
+    final parts = text.split('**');
+    final spans = <TextSpan>[];
+    for (var i = 0; i < parts.length; i++) {
+      if (parts[i].isEmpty) continue;
+      spans.add(TextSpan(text: parts[i], style: i.isOdd ? boldStyle : baseStyle));
+    }
+    return TextSpan(children: spans.isEmpty ? [const TextSpan(text: '')] : spans);
   }
 }

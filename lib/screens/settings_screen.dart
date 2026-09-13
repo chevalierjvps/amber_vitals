@@ -106,23 +106,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                   const SizedBox(height: 12),
                   const Text(
-                    'AMBER-01 // BioMonitor System',
+                    'AMBER-01 · Clinical-Style Biotelemetry Unit',
                     style: TextStyle(color: AmberPalette.text, fontWeight: FontWeight.w700, fontSize: 14),
                   ),
                   const SizedBox(height: 4),
                   const Text(
-                    'Engineered & Developed by João V.P.',
+                    'Engineered & Developed by João V.P. (@chevalierjvps)',
                     style: TextStyle(color: AmberPalette.amber, fontWeight: FontWeight.w600, fontSize: 13),
                   ),
                   const SizedBox(height: 8),
                   const Text(
-                    'Real-time biomedical telemetry monitor pairing an ESP32 microcontroller with an AD8232 ECG sensor and a MAX30102 pulse oximeter over Nordic UART Service (NUS) Bluetooth Low Energy.',
+                    'Real-time biomedical telemetry monitor pairing an ESP32 microcontroller with an AD8232 ECG sensor and a MAX30102 pulse oximeter over Nordic UART Service (NUS) Bluetooth Low Energy, with on-device DSP filtering and a Gemini-powered telemetry copilot.',
                     style: TextStyle(color: AmberPalette.textDim, fontSize: 12, height: 1.4),
                   ),
                   const SizedBox(height: 10),
                   const Text(
-                    'Hardware Serial: SN 30102-BE1 · Version 1.0.0',
+                    'Hardware Serial: SN 30102-BE1 · Version 2.0.0',
                     style: TextStyle(color: AmberPalette.textDim, fontSize: 11),
+                  ),
+                  const SizedBox(height: 10),
+                  const Text(
+                    'DIY educational electronics project — not a certified medical device. '
+                    'It does not diagnose conditions; consult a healthcare professional for any real health concern.',
+                    style: TextStyle(color: AmberPalette.textDim, fontSize: 10.5, height: 1.4, fontStyle: FontStyle.italic),
                   ),
                 ],
               ),

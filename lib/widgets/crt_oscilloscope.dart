@@ -80,11 +80,13 @@ class CrtOscilloscope extends StatelessWidget {
                       decoration: const BoxDecoration(
                         color: Color(0xFF060300),
                       ),
-                      child: CustomPaint(
-                        painter: _CrtWavePainter(
-                          samples: samples,
-                          waveColor: waveColor,
-                          gridColor: const Color(0x287A4A00),
+                      child: RepaintBoundary(
+                        child: CustomPaint(
+                          painter: _CrtWavePainter(
+                            samples: samples,
+                            waveColor: waveColor,
+                            gridColor: const Color(0x287A4A00),
+                          ),
                         ),
                       ),
                     ),

@@ -7,7 +7,7 @@ void main() {
     await tester.pumpWidget(const AmberVitalsApp());
     await tester.pumpAndSettle();
 
-    expect(find.text('Amber Vitals'), findsOneWidget);
-    expect(find.text('Conectar'), findsOneWidget);
+    expect(find.text('AMBER-01'), findsOneWidget);
+    expect(find.text('Connect ESP32'), findsOneWidget);
   });
 }
