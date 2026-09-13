@@ -4,11 +4,9 @@ import 'package:flutter/material.dart';
 import '../theme/amber_theme.dart';
 import 'sensor_module.dart';
 
-/// MAX30102 pulse-oximeter module: heart rate (BPM) + blood-oxygen (SpO2),
-/// fed by the ESP32 firmware's "IR,BPM,SPO2,FINGER_OK" BLE notification.
+/// MAX30102 pulse-oximeter module: heart rate (BPM) + blood-oxygen (SpO2).
+/// Engineered by João V.P.
 class PulseOxModule implements SensorModule {
-  /// Rolling window of recent IR samples, kept here so the card can draw a
-  /// live waveform. Fed externally by [pushSample] as new BLE data arrives.
   final List<double> _irHistory = [];
   static const _historyLength = 100;
 
@@ -23,7 +21,7 @@ class PulseOxModule implements SensorModule {
   String get id => 'pulse_ox';
 
   @override
-  String get displayName => 'Oxímetro de Pulso';
+  String get displayName => 'Pulse Oximeter (SpO₂)';
 
   @override
   IconData get icon => Icons.favorite_rounded;
@@ -34,8 +32,8 @@ class PulseOxModule implements SensorModule {
   @override
   String summarize(SensorData data) {
     final fingerOk = data['fingerOk'] == true;
-    if (!fingerOk) return 'Oxímetro: sem dedo no sensor.';
-    return 'Oxímetro: ${data['bpm']} bpm, SpO2 ${data['spo2']}%.';
+    if (!fingerOk) return 'Pulse oximeter: no finger on sensor.';
+    return 'Pulse oximeter: ${data['bpm']} BPM, SpO2 ${data['spo2']}%.';
   }
 
   @override
@@ -65,7 +63,7 @@ class PulseOxModule implements SensorModule {
                 padding: const EdgeInsets.symmetric(vertical: 24),
                 child: Center(
                   child: Text(
-                    'Coloque o dedo no sensor',
+                    'Place finger on sensor',
                     style: TextStyle(color: AmberPalette.textDim, fontSize: 16),
                   ),
                 ),
@@ -122,7 +120,7 @@ class _StatusPill extends StatelessWidget {
         border: Border.all(color: color),
       ),
       child: Text(
-        fingerOk ? 'lendo' : 'aguardando',
+        fingerOk ? 'reading' : 'waiting',
         style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.w600),
       ),
     );
@@ -150,9 +148,6 @@ class _Waveform extends StatelessWidget {
         titlesData: const FlTitlesData(show: false),
         borderData: FlBorderData(show: false),
         lineTouchData: const LineTouchData(enabled: false),
-        // Without this, the curve's cubic smoothing overshoots past the
-        // first/last points and bleeds outside the chart's own box (visible
-        // as the amber fill spilling past the card's rounded edge).
         clipData: const FlClipData.all(),
         lineBarsData: [
           LineChartBarData(

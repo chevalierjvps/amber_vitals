@@ -21,10 +21,10 @@ class AiService {
   static const defaultModel = 'gemini-2.0-flash';
 
   static const _systemInstruction =
-      'Você comenta leituras de sensores biométricos de um projeto pessoal/educacional de eletrônica. '
-      'Nunca dê diagnóstico médico — apenas descreva a tendência dos números em 2-3 frases curtas, em '
-      'português, de forma acessível. Se algo estiver fora de faixas de referência gerais, mencione com '
-      'cautela e sugira observar/procurar um profissional se persistir, sem alarmismo.';
+      'You comment on biometric sensor readings from a personal/educational electronics project. '
+      'Never give medical diagnosis — simply describe the trend in 2-3 short, accessible sentences, '
+      'in English. If something is outside standard general reference ranges, mention with caution '
+      'and suggest observing/consulting a healthcare professional if it persists, without alarmism.';
 
   static Future<String?> getApiKey() async {
     final prefs = await SharedPreferences.getInstance();
